@@ -4,6 +4,11 @@ import torch
 from torch.utils.data import DataLoader, TensorDataset
 import jieba
 import random
+from sklearn.metrics import precision_score, recall_score, f1_score, accuracy_score, roc_auc_score ,roc_curve
+import torch.nn.functional as F
+import torch.nn as nn
+import torch.optim as optim
+import matplotlib.pyplot as plt
 
 # 设置随机种子以确保可复现性
 #好种子44(85%)、46(90%)
@@ -13,14 +18,11 @@ np.random.seed(random_seed)
 random.seed(random_seed)
 torch.manual_seed(random_seed)
 
-# 读取数据
 train_df = pd.read_csv('./Data/train.news.csv')
 
-# 数据集划分
 validation_df = train_df.sample(n=2000, random_state=random_seed)
 train_df = train_df.drop(validation_df.index)
 
-# 初始化jieba分词
 jieba.initialize()
 
 def load_embeddings(path, dimension=300):
@@ -46,18 +48,14 @@ def text_to_matrix(text, word_vecs, max_words):
             matrix[i] = word_vecs[word]
     return matrix
 
-# 计算最大词数
 max_words = max(train_df['Title'].apply(lambda x: len(jieba.lcut(x))).max(),
                 validation_df['Title'].apply(lambda x: len(jieba.lcut(x))).max())
 
-# 预处理文本数据
 X_train = np.array([text_to_matrix(title, word_vecs, max_words) for title in train_df['Title']])
 y_train = train_df['label'].values
-
 X_validation = np.array([text_to_matrix(title, word_vecs, max_words) for title in validation_df['Title']])
 y_validation = validation_df['label'].values
 
-# 转换为PyTorch张量
 X_train = torch.tensor(X_train, dtype=torch.float32)
 y_train = torch.tensor(y_train, dtype=torch.long)
 X_validation = torch.tensor(X_validation, dtype=torch.float32)
@@ -66,11 +64,9 @@ y_validation = torch.tensor(y_validation, dtype=torch.long)
 # DataLoader
 train_dataset = TensorDataset(X_train, y_train)
 validation_dataset = TensorDataset(X_validation, y_validation)
-
 train_loader = DataLoader(dataset=train_dataset, batch_size=64, shuffle=True)
 validation_loader = DataLoader(dataset=validation_dataset, batch_size=64, shuffle=False)
 
-import torch.nn as nn
 
 class RNNModel(nn.Module):
     def __init__(self, input_dim, hidden_dim, output_dim, n_layers):
@@ -85,9 +81,6 @@ class RNNModel(nn.Module):
 
 
 model = RNNModel(input_dim=300, hidden_dim=64, output_dim=2, n_layers=2)
-
-import torch.optim as optim
-from sklearn.metrics import accuracy_score
 
 # 检查CUDA是否可用，然后选择设备
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
@@ -105,23 +98,15 @@ def to_device(data, device):
 criterion = nn.CrossEntropyLoss()
 optimizer = optim.Adam(model.parameters())
 
-# 训练循环中，确保数据和模型都在同一个设备
-for epoch in range(10):  # 进行多轮训练
+for epoch in range(10):
     for texts, labels in train_loader:
-        texts, labels = to_device(texts, device), to_device(labels, device)
-
+        texts, labels = to_device(texts, device), to_device(labels, device)# 训练循环中，确保数据和模型都在同一个设备
         optimizer.zero_grad()
         outputs = model(texts)
         loss = criterion(outputs, labels)
         loss.backward()
         optimizer.step()
-
     print(f'Epoch {epoch + 1}, Loss: {loss.item()}')
-
-from sklearn.metrics import precision_score, recall_score, f1_score, accuracy_score, roc_auc_score
-import torch.nn.functional as F
-from sklearn.metrics import roc_auc_score
-# 模型评估时，同样确保数据在正确的设备
 
 model.eval()
 with torch.no_grad():
@@ -129,13 +114,16 @@ with torch.no_grad():
     probabilities = []  # 用于收集所有样本的预测概率
     y_true = []  # 用于收集所有样本的真实标签
     for texts, labels in validation_loader:
-        texts, labels = to_device(texts, device), to_device(labels, device)
+        texts, labels = to_device(texts, device), to_device(labels, device)# 模型评估时，同样确保数据在正确的设备
         outputs = model(texts)
         _, predicted = torch.max(outputs.data, 1)
         y_pred.extend(predicted.cpu().numpy())  # 将预测结果移回CPU，如果你需要在CPU上进一步处理的话
         probs = F.softmax(outputs, dim=1)  # 应用Softmax函数计算概率
         probabilities.extend(probs[:, 1].cpu().numpy())  # 收集类别为1的概率
         y_true.extend(labels.cpu().numpy())  # 收集真实标签
+
+    print(probabilities,"\n",y_pred,"\n",y_true,"\n",y_validation)
+
     # 真实标签上的精确率、召回率和F1指标
     precision_0 = precision_score(y_validation, y_pred, pos_label=0)
     recall_0 = recall_score(y_validation, y_pred, pos_label=0)
@@ -148,7 +136,6 @@ with torch.no_grad():
 
     # 整体的准确率（Accuracy）
     accuracy = accuracy_score(y_validation, y_pred)
-
     # 计算AUC指标
     auc = roc_auc_score(y_true, probabilities)
 
@@ -161,4 +148,16 @@ with torch.no_grad():
     print(f"Overall Accuracy: {accuracy}")
     print(f"AUC: {auc}")
 
+    # 使用matplotlib绘制ROC曲线
+    fpr, tpr, thresholds = roc_curve(y_true, probabilities)
+    plt.figure()
+    plt.plot(fpr, tpr, color='darkorange', lw=2, label='ROC curve (area = %0.2f)' % auc)
+    plt.plot([0, 1], [0, 1], color='navy', lw=2, linestyle='--')
+    plt.xlim([0.0, 1.0])
+    plt.ylim([0.0, 1.05])
+    plt.xlabel('False Positive Rate')
+    plt.ylabel('True Positive Rate')
+    plt.title('Receiver Operating Characteristic (ROC)')
+    plt.legend(loc="lower right")
+    plt.show()
 
