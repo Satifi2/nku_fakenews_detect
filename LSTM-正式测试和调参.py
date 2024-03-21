@@ -11,13 +11,11 @@ import torch.optim as optim
 import matplotlib.pyplot as plt
 jieba.initialize()
 #在这里可以调参
-hidden_dim = 64
-random_seed = 46
+hidden_dim = 256
+random_seed = 12
 random_state=0
 epochs= 20
-#好种子：hidden_size=64，random_seed = 46，random_state=0，epochs=20
-#hidden=128，random_seed = 44，random_state=0，epochs=20
-#hidden=256，random_seed = 51，random_state=0，epochs=20
+
 np.random.seed(random_seed)
 random.seed(random_seed)
 torch.manual_seed(random_seed)
@@ -64,18 +62,18 @@ validation_dataset = TensorDataset(X_validation, y_validation)
 train_loader = DataLoader(dataset=train_dataset, batch_size=64, shuffle=True)
 validation_loader = DataLoader(dataset=validation_dataset, batch_size=64, shuffle=False)
 
-class RNNModel(nn.Module):
+class LSTMModel(nn.Module):
     def __init__(self, input_dim, hidden_dim, output_dim, n_layers):
-        super(RNNModel, self).__init__()
-        self.rnn = nn.RNN(input_dim, hidden_dim, n_layers, batch_first=True)
+        super(LSTMModel, self).__init__()
+        self.lstm = nn.LSTM(input_dim, hidden_dim, n_layers, batch_first=True)
         self.fc = nn.Linear(hidden_dim, output_dim)
 
     def forward(self, x):
-        out, _ = self.rnn(x)
+        out, (hidden, cell) = self.lstm(x)
         out = self.fc(out[:, -1, :])
         return out
 
-model = RNNModel(input_dim=300, hidden_dim=hidden_dim, output_dim=2, n_layers=2)
+model = LSTMModel(input_dim=300, hidden_dim=hidden_dim, output_dim=2, n_layers=2)
 
 # 检查CUDA是否可用，然后选择设备
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
@@ -91,7 +89,7 @@ def to_device(data, device):
     return data.to(device, non_blocking=True)
 
 criterion = nn.CrossEntropyLoss()
-optimizer = optim.Adam(model.parameters())
+optimizer = optim.Adam(model.parameters(),lr=0.0001)
 
 for epoch in range(epochs):
     for texts, labels in train_loader:
