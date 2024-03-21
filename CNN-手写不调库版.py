@@ -10,6 +10,9 @@ import torch.nn as nn
 import torch.optim as optim
 import matplotlib.pyplot as plt
 jieba.initialize()
+# 检查CUDA是否可用，然后选择设备
+device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+print(f'Using device: {device}')
 #在这里可以调参
 random_seed = 49
 random_state=0
@@ -63,35 +66,61 @@ validation_dataset = TensorDataset(X_validation, y_validation)
 train_loader = DataLoader(dataset=train_dataset, batch_size=64, shuffle=True)
 validation_loader = DataLoader(dataset=validation_dataset, batch_size=64, shuffle=False)
 
+#手写线性层
+def manual_linear_forward(X, linear):
+    return X @ linear.weight.T + linear.bias
+
+# 手动实现卷积的函数
+def manual_conv1d(input_tensor, weights, bias, stride=1, padding=1):
+    batch_size, in_channels, width = input_tensor.shape
+    out_channels, _, kernel_size = weights.shape
+
+    # 计算输出宽度
+    output_width = ((width + 2 * padding - kernel_size) // stride) + 1
+
+    # 应用padding
+    if padding > 0:
+        input_padded = F.pad(input_tensor, (padding, padding), "constant", 0)
+    else:
+        input_padded = input_tensor
+
+    # 初始化输出张量
+    output = torch.zeros(batch_size, out_channels, output_width,device=device)
+
+    # 执行卷积操作
+    for i in range(out_channels):
+        for j in range(output_width):
+            start = j * stride
+            end = start + kernel_size
+            # 对所有输入通道执行卷积并求和
+            output[:, i, j] = torch.sum(input_padded[:, :, start:end] * weights[i, :, :].unsqueeze(0), dim=(1, 2)) + \
+                              bias[i]
+
+    return output
+
 class SimpleCNN(nn.Module):
     def __init__(self):
         super(SimpleCNN, self).__init__()
         self.conv1 = nn.Conv1d(in_channels=300, out_channels=64, kernel_size=3, stride=1, padding=1)
+        # 假设卷积操作后不改变长度（由于padding=1），则输出形状为(batch_size, 64, 300)
         self.pool = nn.MaxPool1d(kernel_size=2, stride=2, padding=0)
-        self.fc = nn.Linear(1280, 2)
+        # 经过池化层后，长度减半，输出形状为(batch_size, 64, 150)
+        self.fc = nn.Linear(1280, 2)  # 全连接层，将卷积层输出平铺后输入，输出形状为(batch_size, 2)
 
     def forward(self, x):
-        print("x.shape:", x.shape)  # x.shape: torch.Size([64, 40, 300])
+        # print("x.shape:", x.shape)  # x.shape: torch.Size([64, 40, 300])
         # 保持x的形状不变，直接用于卷积层
-        x = x.permute(0, 2, 1)
-        print("x.shape:", x.shape)#x.shape: torch.Size([64, 300, 40])
-        x = self.conv1(x)
-        print("x.shape:", x.shape)#x.shape: torch.Size([64, 64, 40])
+        x = x.permute(0, 2, 1)  # 现在调整为(batch_size, channels=300, length=40)
+        x = manual_conv1d(x, self.conv1.weight, self.conv1.bias)
         x = F.relu(x)
-        print("x.shape:", x.shape)#x.shape: torch.Size([64, 64, 40])
         x = self.pool(x)
-        print("x.shape:", x.shape)#x.shape: torch.Size([64, 64, 20])
-        x = x.view(x.size(0), -1)
-        print("x.shape:", x.shape)  #x.shape: torch.Size([64, 1280])
-        x = self.fc(x)
-        print("x.shape:", x.shape) #x.shape: torch.Size([64, 2])
+        x = x.view(x.size(0), -1)  # 平铺操作，为全连接层准备
+        # print("x.shape:", x.shape)  # x.shape: torch.Size([64, 1280])
+        x = manual_linear_forward(x, self.fc)
         return x
 
 model = SimpleCNN()
 
-# 检查CUDA是否可用，然后选择设备
-device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-print(f'Using device: {device}')
 
 # 将模型转移到选定的设备
 model.to(device)
