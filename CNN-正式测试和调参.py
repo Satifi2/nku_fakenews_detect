@@ -11,7 +11,6 @@ import torch.optim as optim
 import matplotlib.pyplot as plt
 jieba.initialize()
 #在这里可以调参
-hidden_dim = 256
 random_seed = 49
 random_state=0
 epochs= 20
@@ -64,18 +63,28 @@ validation_dataset = TensorDataset(X_validation, y_validation)
 train_loader = DataLoader(dataset=train_dataset, batch_size=64, shuffle=True)
 validation_loader = DataLoader(dataset=validation_dataset, batch_size=64, shuffle=False)
 
-class RNNModel(nn.Module):
-    def __init__(self, input_dim, hidden_dim, output_dim, n_layers):
-        super(RNNModel, self).__init__()
-        self.rnn = nn.RNN(input_dim, hidden_dim, n_layers, batch_first=True)
-        self.fc = nn.Linear(hidden_dim, output_dim)
+class SimpleCNN(nn.Module):
+    def __init__(self):
+        super(SimpleCNN, self).__init__()
+        self.conv1 = nn.Conv1d(in_channels=300, out_channels=64, kernel_size=3, stride=1, padding=1)
+        # 假设卷积操作后不改变长度（由于padding=1），则输出形状为(batch_size, 64, 300)
+        self.pool = nn.MaxPool1d(kernel_size=2, stride=2, padding=0)
+        # 经过池化层后，长度减半，输出形状为(batch_size, 64, 150)
+        self.fc = nn.Linear(1280, 2)  # 全连接层，将卷积层输出平铺后输入，输出形状为(batch_size, 2)
 
     def forward(self, x):
-        out, _ = self.rnn(x)
-        out = self.fc(out[:, -1, :])
-        return out
+        # print("x.shape:", x.shape)  # x.shape: torch.Size([64, 40, 300])
+        # 保持x的形状不变，直接用于卷积层
+        x = x.permute(0, 2, 1)  # 现在调整为(batch_size, channels=300, length=40)
+        x = self.conv1(x)
+        x = F.relu(x)
+        x = self.pool(x)
+        x = x.view(x.size(0), -1)  # 平铺操作，为全连接层准备
+        # print("x.shape:", x.shape)  # x.shape: torch.Size([64, 1280])
+        x = self.fc(x)
+        return x
 
-model = RNNModel(input_dim=300, hidden_dim=hidden_dim, output_dim=2, n_layers=2)
+model = SimpleCNN()
 
 # 检查CUDA是否可用，然后选择设备
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")

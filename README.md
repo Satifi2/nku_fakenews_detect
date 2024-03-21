@@ -1,4 +1,28 @@
-# 任务描述
+## 介绍
+
+- 利用自然语言处理技术，执行文本分类任务。
+
+- 使用了机器学习的若干种方法以及CNN、RNN、GRU、LSTM，在测试集上准确率超过了90%。并提供了简单版、GPU训练版，在CNN、RNN上提供了纯手写版（即不调库进行张量计算）。
+- 基本步骤：加载训练集、验证集、测试集，将文本词向量化(通过读取预训练的词向量)，构建模型，训练，验证，调参，测试。
+
+##### 下载预训练词向量
+
+从`https://github.com/Embedding/Chinese-Word-Vectors`当中找到搜狗新闻，选择`Word+Character+Ngram`这一类进行下载，之后解压，将得到的`sgns.sogounews.bigram-char`存入Data文件夹中。
+![image-20240321222518261](./assets/image-20240321222518261.png)
+
+#### 下载`bert`模型
+
+去hugging-face官网下载这五个文件
+
+![image-20240321225621951](./assets/image-20240321225621951.png)
+
+放到`./model/bert-base-chinese`当中。
+
+![image-20240321231053516](./assets/image-20240321231053516.png)
+
+
+
+## 任务描述
 
 #### 一、数据
 
@@ -6,7 +30,9 @@
 
 ![image-20240319103733684](./assets/image-20240319103733684.png)
 
-#### 二、任务(建议使用Scikit Learn和PyTorch实现)
+#### 二、任务
+
+**(建议使用Scikit Learn和PyTorch实现)**
 
 **1. (数据统计)分别统计训练集和测试集中真假样本的数量，填写下表1。**
 
@@ -17,7 +43,7 @@
 | `train.news.csv` |       |       |        |
 | `test.news.csv`  |       |       |        |
 
-#### 2. (验证集上调节参数)只根据微信消息的title文字，预测消息的真假。
+**2. (验证集上调节参数)只根据微信消息的title文字，预测消息的真假。**
 
 从`train.news.csv`中随机抽取2000个样本作为验证集(validation set)，剩余的数据作为训练集(training set)，使用`test.news.csv`中的样本作为测试集(testing set)。使用中文预训练词向量语料库[建议使用[https://github.com/Embedding/Chinese-Word-Vectors](https://github.com/Embedding/Chinese-Word-Vectors)中的微博语料库，也可以使用其他。]把中文微信消息的title表示成词向量。根据训练集数据，训练两层的RNN, LSTM和GRU模型。模型隐层节点数量参数值的调节范围是{64,128,256}，通过在验证集上评价，得到的结果填入表2。
 
@@ -44,7 +70,7 @@
 | GRU   | 256    | Real  |           |        |      |          |      |
 |       |        | Fake  |           |        |      |          |      |
 
-#### 3. (测试集上评价模型)根据表2中的结果,选择在验证集上效果最好的RNN, LSTM和GRU模型，并在测试集上评价这些模型。
+**3. (测试集上评价模型)根据表2中的结果,选择在验证集上效果最好的RNN, LSTM和GRU模型，并在测试集上评价这些模型。**
 
 然后在测试集上评价得到accuracy、recall, F1，并计算得出Accuracy和AUC评价结果，填入表3。
 
@@ -59,7 +85,7 @@
 | GRU   |        | Real  |           |        |    |          |     |
 |       |        | Fake  |           |        |    |          |     |
 
-# 代码
+## 代码
 
 #### 统计label数
 
@@ -98,7 +124,7 @@ print(len(test_data)) #输出测试集样本个数
 
 #### 传统机器学习-sklearn
 
-<img src="./assets/image-20240320111846594.png" alt="image-20240320111846594" style="zoom:67%;" />
+![image-20240320111846594](./../nku_fakenews_detect - 副本/assets/image-20240320111846594.png)
 
 **任务：用Title预测label**
 
@@ -572,9 +598,24 @@ AUC: 0.9197004773514166
 
 
 
+### GRU模型
 
+只需要改变模型类即可，不再赘述
 
+```python
+class GRUModel(nn.Module):
+    def __init__(self, input_dim, hidden_dim, output_dim, n_layers):
+        super(GRUModel, self).__init__()
+        self.gru = nn.GRU(input_dim, hidden_dim, n_layers, batch_first=True)
+        self.fc = nn.Linear(hidden_dim, output_dim)
 
+    def forward(self, x):
+        out, hidden = self.gru(x)
+        out = self.fc(out[:, -1, :])
+        return out
+
+model = GRUModel(input_dim=300, hidden_dim=hidden_dim, output_dim=2, n_layers=2)
+```
 
 ### LSTM模型
 
@@ -591,26 +632,46 @@ class LSTMModel(nn.Module):
         out, (hidden, cell) = self.lstm(x)
         out = self.fc(out[:, -1, :])
         return out
+
+model = LSTMModel(input_dim=300, hidden_dim=hidden_dim, output_dim=2, n_layers=2)
 ```
 
-### GRU模型
+### CNN模型
 
-只需要改变模型类即可，不再赘述
-
-```python
-class GRUModel(nn.Module):
-    def __init__(self, input_dim, hidden_dim, output_dim, n_layers):
-        super(GRUModel, self).__init__()
-        self.gru = nn.GRU(input_dim, hidden_dim, n_layers, batch_first=True)
-        self.fc = nn.Linear(hidden_dim, output_dim)
+```py
+class SimpleCNN(nn.Module):
+    def __init__(self):
+        super(SimpleCNN, self).__init__()
+        self.conv1 = nn.Conv1d(in_channels=300, out_channels=64, kernel_size=3, stride=1, padding=1)
+        # 假设卷积操作后不改变长度（由于padding=1），则输出形状为(batch_size, 64, 300)
+        self.pool = nn.MaxPool1d(kernel_size=2, stride=2, padding=0)
+        # 经过池化层后，长度减半，输出形状为(batch_size, 64, 150)
+        self.fc = nn.Linear(1280, 2)  # 全连接层，将卷积层输出平铺后输入，输出形状为(batch_size, 2)
 
     def forward(self, x):
-        out, hidden = self.gru(x)
-        out = self.fc(out[:, -1, :])
-        return out
+        # print("x.shape:", x.shape)  # x.shape: torch.Size([64, 40, 300])
+        # 保持x的形状不变，直接用于卷积层
+        x = x.permute(0, 2, 1)  # 现在调整为(batch_size, channels=300, length=40)
+        x = self.conv1(x)
+        x = F.relu(x)
+        x = self.pool(x)
+        x = x.view(x.size(0), -1)  # 平铺操作，为全连接层准备
+        # print("x.shape:", x.shape)  # x.shape: torch.Size([64, 1280])
+        x = self.fc(x)
+        return x
+
+model = SimpleCNN()
 ```
 
 
+
+#### 微调Bert模型之后预测
+
+如果之前没有安装过`transformers`
+
+```css
+pip install transformers
+```
 
 
 

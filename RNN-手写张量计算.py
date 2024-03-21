@@ -10,6 +10,10 @@ import torch.nn as nn
 import torch.optim as optim
 import matplotlib.pyplot as plt
 jieba.initialize()
+# 检查CUDA是否可用，然后选择设备
+device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+print(f'Using device: {device}')
+
 #在这里可以调参
 hidden_dim = 256
 random_seed = 49
@@ -64,6 +68,38 @@ validation_dataset = TensorDataset(X_validation, y_validation)
 train_loader = DataLoader(dataset=train_dataset, batch_size=64, shuffle=True)
 validation_loader = DataLoader(dataset=validation_dataset, batch_size=64, shuffle=False)
 
+def manual_rnn_forward(X, rnn):
+    batch_size, seq_len, _ = X.shape
+    hidden_size = rnn.hidden_size
+    num_layers = rnn.num_layers
+
+    # 初始化隐藏状态
+    h_prev = [torch.zeros(batch_size, hidden_size, device=device) for _ in range(num_layers)]
+
+    # 存储每一层的最终输出
+    layer_outputs = []
+
+    # 对于每一层
+    for layer in range(num_layers):
+        layer_input = X if layer == 0 else layer_outputs[-1]
+        W_xh = getattr(rnn, f'weight_ih_l{layer}').to(device)
+        W_hh = getattr(rnn, f'weight_hh_l{layer}').to(device)
+        b_h = (getattr(rnn, f'bias_ih_l{layer}') + getattr(rnn, f'bias_hh_l{layer}')).to(device)
+
+        outputs = []
+        for t in range(seq_len):
+            x_t = layer_input[:, t, :]
+            h_t = torch.tanh(x_t @ W_xh.T + h_prev[layer] @ W_hh.T + b_h)
+            outputs.append(h_t.unsqueeze(1))
+            h_prev[layer] = h_t
+        layer_outputs.append(torch.cat(outputs, dim=1))
+
+    return layer_outputs[-1], torch.stack(h_prev, dim=0)
+
+#手写线性层前向传播
+def manual_linear_forward(X, linear):
+    return X @ linear.weight.T + linear.bias
+
 class RNNModel(nn.Module):
     def __init__(self, input_dim, hidden_dim, output_dim, n_layers):
         super(RNNModel, self).__init__()
@@ -71,16 +107,11 @@ class RNNModel(nn.Module):
         self.fc = nn.Linear(hidden_dim, output_dim)
 
     def forward(self, x):
-        out, _ = self.rnn(x)
-        out = self.fc(out[:, -1, :])
+        out, _ = manual_rnn_forward(x, self.rnn)
+        out = manual_linear_forward(out[:, -1, :], self.fc)
         return out
 
 model = RNNModel(input_dim=300, hidden_dim=hidden_dim, output_dim=2, n_layers=2)
-
-# 检查CUDA是否可用，然后选择设备
-device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-print(f'Using device: {device}')
-
 # 将模型转移到选定的设备
 model.to(device)
 

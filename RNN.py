@@ -81,12 +81,12 @@ class RNNModel(nn.Module):
         #print("shape of out[:, -1, :]:",out[:, -1, :].shape)#输出shape of out[:, -1, :]: torch.Size([64, 64])，表示64个标题，每个标题最后一个词的隐藏层输出
         #print("shape of hidden" ,hidden.shape)#输出shape of hidden torch.Size([2, 64, 64])，表示2层RNN，每层64个标题，每个标题64维的隐藏层输出
         out = self.fc(out[:, -1, :])
+        #print("shape of out:",out.shape)#输出shape of out: torch.Size([64, 2])，表示64个标题，每个标题的预测结果
         return out
 
 model = RNNModel(input_dim=300, hidden_dim=64, output_dim=2, n_layers=2)
 
 import torch.optim as optim
-from sklearn.metrics import accuracy_score
 
 criterion = nn.CrossEntropyLoss()#对于分类任务，一般用 CrossEntropyLoss 即交叉熵损失，网络层没有用softmax，因为CrossEntropyLoss已经包含了softmax
 optimizer = optim.Adam(model.parameters()) # Adam优化器，没有定义学习率，因为有默认值
@@ -101,7 +101,7 @@ for epoch in range(10):  # 进行多轮训练
         optimizer.step()#更新参数，主要工作之一确实是梯度下降
     print(f'Epoch {epoch+1}, Loss: {loss.item()}')#打印每个epoch的损失值
 
-from sklearn.metrics import precision_score, recall_score, f1_score, accuracy_score, roc_auc_score
+from sklearn.metrics import accuracy_score
 # 模型评估
 model.eval()#模型评估模式，因为有些层在训练和评估时行为不同，例如Dropout和BatchNorm
 with torch.no_grad(): #不需要计算梯度
