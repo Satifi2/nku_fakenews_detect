@@ -10,43 +10,36 @@ import torch.nn as nn
 import torch.optim as optim
 import matplotlib.pyplot as plt
 jieba.initialize()
-# 检查CUDA是否可用，然后选择设备
-device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-print(f'Using device: {device}')
 
-#在这里可以调参
-hidden_dim = 256
-random_seed = 49
-random_state=0
-epochs= 20
-#好种子：hidden_size=64，random_seed = 46，random_state=0，epochs=20
-#hidden=128，random_seed = 44，random_state=0，epochs=20
-#hidden=256，random_seed = 51，random_state=0，epochs=20
+random_seed = 0
 np.random.seed(random_seed)
 random.seed(random_seed)
 torch.manual_seed(random_seed)
 
 train_df = pd.read_csv('./Data/train.news.csv')
-validation_df = train_df.sample(n=2000, random_state=random_state)
+validation_df = train_df.sample(n=2000, random_state=0)
 train_df = train_df.drop(validation_df.index)
 
 def load_embeddings(path, dimension=300):
     word_vecs = {}
     with open(path, 'r', encoding='UTF-8') as f:
+        n, _ = map(int, f.readline().strip().split())
         for line in f:
             parts = line.strip().split()
             word = ' '.join(parts[:-dimension])  # 假设最后dimension个元素是向量，其余的是词
             vec = list(map(float, parts[-dimension:]))  # 只取最后dimension个元素作为向量
             word_vecs[word] = vec
     return word_vecs
-word_vecs = load_embeddings('Data/usefulWordVec.txt')
+word_vecs = load_embeddings('Data/sgns.sogounews.bigram-char')
 
+useful_word_vecs={}#记录有用的词向量的字典
 def text_to_matrix(text, word_vecs, max_words):
     words = jieba.lcut(text)
     matrix = np.zeros((max_words, len(next(iter(word_vecs.values())))))
     for i, word in enumerate(words[:max_words]):
         if word in word_vecs:
             matrix[i] = word_vecs[word]
+            useful_word_vecs[word]=word_vecs[word]
     return matrix
 
 max_words = max(train_df['Title'].apply(lambda x: len(jieba.lcut(x))).max(),
@@ -68,50 +61,57 @@ validation_dataset = TensorDataset(X_validation, y_validation)
 train_loader = DataLoader(dataset=train_dataset, batch_size=64, shuffle=True)
 validation_loader = DataLoader(dataset=validation_dataset, batch_size=64, shuffle=False)
 
-def manual_rnn_forward(X, rnn):
-    batch_size, seq_len, _ = X.shape
-    hidden_size = rnn.hidden_size
-    num_layers = rnn.num_layers
+class TransformerModel(nn.Module):
+    def __init__(self, input_dim, hidden_dim, output_dim, n_layers, n_heads, dropout=0.1):
+        super(TransformerModel, self).__init__()
+        # 由于输入已经是特征向量，这里可以使用一个线性层来调整维度，也可以直接省略
+        self.input_fc = nn.Linear(input_dim, hidden_dim)
 
-    # 初始化隐藏状态
-    h_prev = [torch.zeros(batch_size, hidden_size, device=device) for _ in range(num_layers)]
+        # Transformer需要知道序列的相对或绝对位置，以下是位置编码
+        self.pos_encoder = nn.Embedding(5000, hidden_dim)  # 假设最大序列长度为5000
 
-    # 存储每一层的最终输出
-    layer_outputs = []
+        encoder_layers = nn.TransformerEncoderLayer(hidden_dim, n_heads, hidden_dim, dropout)
+        self.transformer_encoder = nn.TransformerEncoder(encoder_layers, n_layers)
 
-    # 对于每一层
-    for layer in range(num_layers):
-        layer_input = X if layer == 0 else layer_outputs[-1]
-        W_xh = getattr(rnn, f'weight_ih_l{layer}').to(device)
-        W_hh = getattr(rnn, f'weight_hh_l{layer}').to(device)
-        b_h = (getattr(rnn, f'bias_ih_l{layer}') + getattr(rnn, f'bias_hh_l{layer}')).to(device)
-
-        outputs = []
-        for t in range(seq_len):
-            x_t = layer_input[:, t, :]
-            h_t = torch.tanh(x_t @ W_xh.T + h_prev[layer] @ W_hh.T + b_h)
-            outputs.append(h_t.unsqueeze(1))
-            h_prev[layer] = h_t
-        layer_outputs.append(torch.cat(outputs, dim=1))
-
-    return layer_outputs[-1], torch.stack(h_prev, dim=0)
-
-#手写线性层前向传播
-def manual_linear_forward(X, linear):
-    return X @ linear.weight.T + linear.bias
-
-class RNNModel(nn.Module):
-    def __init__(self, input_dim, hidden_dim, output_dim, n_layers):
-        super(RNNModel, self).__init__()
-        self.rnn = nn.RNN(input_dim, hidden_dim, n_layers, batch_first=True)
-        self.fc = nn.Linear(hidden_dim, output_dim)
+        self.output_fc = nn.Linear(hidden_dim, output_dim)
 
     def forward(self, x):
-        out, _ = manual_rnn_forward(x, self.rnn)
-        out = manual_linear_forward(out[:, -1, :], self.fc)
+        # 调整输入维度
+        x = self.input_fc(x)  # [batch_size, seq_len, hidden_dim]
+
+        # 生成位置信息
+        positions = torch.arange(0, x.size(1)).expand(x.size(0), x.size(1)).to(x.device)
+        x = x + self.pos_encoder(positions)
+
+        # 转换维度符合Transformer的输入要求: [seq_len, batch_size, hidden_dim]
+        x = x.permute(1, 0, 2)
+
+        # Transformer编码器处理
+        out = self.transformer_encoder(x)
+
+        # 取最后一个时间步的输出
+        out = out[-1, :, :]
+
+        # 输出层
+        out = self.output_fc(out)
+
         return out
 
-model = RNNModel(input_dim=300, hidden_dim=hidden_dim, output_dim=2, n_layers=2)
+
+# 初始化模型参数
+input_dim = 300
+hidden_dim = 64
+output_dim = 2
+n_layers = 2
+n_heads = 8
+dropout = 0.1
+
+model = TransformerModel(input_dim, hidden_dim, output_dim, n_layers, n_heads, dropout)
+
+# 检查CUDA是否可用，然后选择设备
+device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+print(f'Using device: {device}')
+
 # 将模型转移到选定的设备
 model.to(device)
 
@@ -122,33 +122,14 @@ def to_device(data, device):
     return data.to(device, non_blocking=True)
 
 criterion = nn.CrossEntropyLoss()
-optimizer = optim.Adam(model.parameters(),lr=0.0001)
+optimizer = optim.Adam(model.parameters())
 
-
-def manual_cross_entropy_loss(outputs, labels):
-    # 假设`outputs`已经在适当的设备上（例如cuda:0），并且`labels`也是如此
-
-    # Step 1: Softmax
-    softmax_outputs = F.softmax(outputs, dim=1)
-
-    # Step 2: Logarithm
-    log_softmax_outputs = torch.log(softmax_outputs)
-
-    # Step 3: Negative Log Likelihood
-    n_samples = labels.shape[0]
-    correct_log_probs = -log_softmax_outputs[torch.arange(n_samples), labels]
-
-    # Step 4: Mean
-    loss = torch.mean(correct_log_probs)
-
-    return loss
-
-for epoch in range(epochs):
+for epoch in range(20):
     for texts, labels in train_loader:
         texts, labels = to_device(texts, device), to_device(labels, device)# 训练循环中，确保数据和模型都在同一个设备
         optimizer.zero_grad()
         outputs = model(texts)
-        loss = manual_cross_entropy_loss(outputs, labels)
+        loss = criterion(outputs, labels)
         loss.backward()
         optimizer.step()
     print(f'Epoch {epoch + 1}, Loss: {loss.item()}')
@@ -168,6 +149,7 @@ def evaluate_model(data_loader, model):
             probs = F.softmax(outputs, dim=1)
             probabilities.extend(probs[:, 1].cpu().numpy())
             y_true.extend(labels.cpu().numpy())
+    # print(probabilities[:20],"\n", y_true[:20],"\n", y_pred[:20],"\n",y_validation[:20])
 
     precision_0 = precision_score(y_true, y_pred, pos_label=0)
     recall_0 = recall_score(y_true, y_pred, pos_label=0)
@@ -220,3 +202,8 @@ test_loader = DataLoader(dataset=test_dataset, batch_size=64, shuffle=False)
 print("Evaluation on Test Set:")
 evaluate_model(test_loader, model)
 
+# 遍历字典并写入文件
+with open('./Data/usefulWordVec.txt', 'w', encoding='utf-8') as f:
+    for word, vec in useful_word_vecs.items():
+        line = f"{word} {' '.join(map(str, vec))}\n"
+        f.write(line)

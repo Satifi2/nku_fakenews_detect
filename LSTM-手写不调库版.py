@@ -68,13 +68,16 @@ validation_dataset = TensorDataset(X_validation, y_validation)
 train_loader = DataLoader(dataset=train_dataset, batch_size=64, shuffle=True)
 validation_loader = DataLoader(dataset=validation_dataset, batch_size=64, shuffle=False)
 
-def manual_rnn_forward(X, rnn):
-    batch_size, seq_len, _ = X.shape
-    hidden_size = rnn.hidden_size
-    num_layers = rnn.num_layers
 
-    # 初始化隐藏状态
-    h_prev = [torch.zeros(batch_size, hidden_size, device=device) for _ in range(num_layers)]
+# 定义手动LSTM前向传播函数
+def manual_lstm_forward(X, lstm):
+    batch_size, seq_len, _ = X.shape
+    hidden_size = lstm.hidden_size
+    num_layers = lstm.num_layers
+
+    # 初始化隐藏状态和单元状态
+    h_prev = [torch.zeros(batch_size, hidden_size,device=device) for _ in range(num_layers)]
+    C_prev = [torch.zeros(batch_size, hidden_size,device=device) for _ in range(num_layers)]
 
     # 存储每一层的最终输出
     layer_outputs = []
@@ -82,19 +85,30 @@ def manual_rnn_forward(X, rnn):
     # 对于每一层
     for layer in range(num_layers):
         layer_input = X if layer == 0 else layer_outputs[-1]
-        W_xh = getattr(rnn, f'weight_ih_l{layer}').to(device)
-        W_hh = getattr(rnn, f'weight_hh_l{layer}').to(device)
-        b_h = (getattr(rnn, f'bias_ih_l{layer}') + getattr(rnn, f'bias_hh_l{layer}')).to(device)
+        all_weights = getattr(lstm, f'weight_ih_l{layer}'), getattr(lstm, f'weight_hh_l{layer}')
+        all_biases = getattr(lstm, f'bias_ih_l{layer}'), getattr(lstm, f'bias_hh_l{layer}')
 
         outputs = []
+        # LSTM gates
         for t in range(seq_len):
-            x_t = layer_input[:, t, :]
-            h_t = torch.tanh(x_t @ W_xh.T + h_prev[layer] @ W_hh.T + b_h)
+            gates = (layer_input[:, t, :] @ all_weights[0].T + all_biases[0] +
+                     h_prev[layer] @ all_weights[1].T + all_biases[1])
+            i_t, f_t, g_t, o_t = gates.chunk(4, 1)
+
+            i_t = torch.sigmoid(i_t)
+            f_t = torch.sigmoid(f_t)
+            g_t = torch.tanh(g_t)
+            o_t = torch.sigmoid(o_t)
+
+            C_t = f_t * C_prev[layer] + i_t * g_t
+            h_t = o_t * torch.tanh(C_t)
+
             outputs.append(h_t.unsqueeze(1))
             h_prev[layer] = h_t
+            C_prev[layer] = C_t
         layer_outputs.append(torch.cat(outputs, dim=1))
 
-    return layer_outputs[-1], torch.stack(h_prev, dim=0)
+    return layer_outputs[-1], (torch.stack(h_prev, dim=0), torch.stack(C_prev, dim=0))
 
 #手写线性层前向传播
 def manual_linear_forward(X, linear):
@@ -103,11 +117,11 @@ def manual_linear_forward(X, linear):
 class RNNModel(nn.Module):
     def __init__(self, input_dim, hidden_dim, output_dim, n_layers):
         super(RNNModel, self).__init__()
-        self.rnn = nn.RNN(input_dim, hidden_dim, n_layers, batch_first=True)
+        self.lstm = nn.LSTM(input_dim, hidden_dim, n_layers, batch_first=True)
         self.fc = nn.Linear(hidden_dim, output_dim)
 
     def forward(self, x):
-        out, _ = manual_rnn_forward(x, self.rnn)
+        out, _ = manual_lstm_forward(x, self.lstm)
         out = manual_linear_forward(out[:, -1, :], self.fc)
         return out
 

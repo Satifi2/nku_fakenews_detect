@@ -1,8 +1,10 @@
+[TOC]
+
 ## 介绍
 
 - 利用自然语言处理技术，执行文本分类任务。
 
-- 使用了机器学习的若干种方法以及CNN、RNN、GRU、LSTM，在测试集上准确率超过了90%。并提供了简单版、GPU训练版，在CNN、RNN上提供了纯手写版（即不调库进行张量计算）。
+- 使用了机器学习的若干种方法以及CNN、RNN、GRU、LSTM、Transformer，在测试集上准确率超过了90%。并提供了简单版、GPU训练版，在CNN、RNN、LSTM上提供了不调库版（手写卷积、池化、线性、RNN层、LSTM层、交叉熵）。
 - 基本步骤：加载训练集、验证集、测试集，将文本词向量化(通过读取预训练的词向量)，构建模型，训练，验证，调参，测试。
 
 ##### 下载预训练词向量
@@ -10,15 +12,7 @@
 从`https://github.com/Embedding/Chinese-Word-Vectors`当中找到搜狗新闻，选择`Word+Character+Ngram`这一类进行下载，之后解压，将得到的`sgns.sogounews.bigram-char`存入Data文件夹中。
 ![image-20240321222518261](./assets/image-20240321222518261.png)
 
-#### 下载`bert`模型
 
-去hugging-face官网下载这五个文件
-
-![image-20240321225621951](./assets/image-20240321225621951.png)
-
-放到`./model/bert-base-chinese`当中。
-
-![image-20240321231053516](./assets/image-20240321231053516.png)
 
 
 
@@ -124,7 +118,7 @@ print(len(test_data)) #输出测试集样本个数
 
 #### 传统机器学习-sklearn
 
-![image-20240320111846594](./../nku_fakenews_detect - 副本/assets/image-20240320111846594.png)
+![image-20240323201656023](./assets/image-20240323201656023.png)
 
 **任务：用Title预测label**
 
@@ -665,7 +659,7 @@ class SimpleCNN(nn.Module):
 model = SimpleCNN()
 ```
 
-#### 纯手写RNN(不调库)
+### 纯手写RNN(不调库)
 
 RNN层关键是写一个函数达到和nn.rnn相同的效果
 ```py
@@ -726,7 +720,28 @@ def manual_linear_forward(X, linear):
     return X @ linear.weight.T + linear.bias
 ```
 
-#### 纯手写CNN（不调库）
+纯手写交叉熵计算损失。
+```py
+def manual_cross_entropy_loss(outputs, labels):
+    # 假设`outputs`已经在适当的设备上（例如cuda:0），并且`labels`也是如此
+
+    # Step 1: Softmax
+    softmax_outputs = F.softmax(outputs, dim=1)
+
+    # Step 2: Logarithm
+    log_softmax_outputs = torch.log(softmax_outputs)
+
+    # Step 3: Negative Log Likelihood
+    n_samples = labels.shape[0]
+    correct_log_probs = -log_softmax_outputs[torch.arange(n_samples), labels]
+
+    # Step 4: Mean
+    loss = torch.mean(correct_log_probs)
+
+    return loss
+```
+
+### 纯手写CNN（不调库）
 
 关键是写一个函数达到和nn.cnn相同的效果
 
@@ -790,17 +805,155 @@ print("Output close:", torch.allclose(output_conv1d, manual_conv1d_output, atol=
 
 ```
 
+### 纯手写LSTM（不调库）
+
+关键是写一个函数达到和nn.cnn相同的效果
+
+```py
+import torch
+import torch.nn as nn
+
+torch.manual_seed(42)
+
+# 定义LSTM模型
+lstm = nn.LSTM(input_size=3, hidden_size=10, num_layers=2, batch_first=True)
+
+input_data=torch.randn(2, 5, 3)  # Batch size = 2, Sequence length = 5, Input size = 3
+
+# 定义手动LSTM前向传播函数
+def manual_lstm_forward(X, lstm):
+    batch_size, seq_len, _ = X.shape
+    hidden_size = lstm.hidden_size
+    num_layers = lstm.num_layers
+
+    # 初始化隐藏状态和单元状态
+    h_prev = [torch.zeros(batch_size, hidden_size) for _ in range(num_layers)]
+    C_prev = [torch.zeros(batch_size, hidden_size) for _ in range(num_layers)]
+
+    # 存储每一层的最终输出
+    layer_outputs = []
+
+    # 对于每一层
+    for layer in range(num_layers):
+        layer_input = X if layer == 0 else layer_outputs[-1]
+        all_weights = getattr(lstm, f'weight_ih_l{layer}'), getattr(lstm, f'weight_hh_l{layer}')
+        all_biases = getattr(lstm, f'bias_ih_l{layer}'), getattr(lstm, f'bias_hh_l{layer}')
+
+        outputs = []
+        # LSTM gates
+        for t in range(seq_len):
+            gates = (layer_input[:, t, :] @ all_weights[0].T + all_biases[0] +
+                     h_prev[layer] @ all_weights[1].T + all_biases[1])
+            i_t, f_t, g_t, o_t = gates.chunk(4, 1)
+
+            i_t = torch.sigmoid(i_t)
+            f_t = torch.sigmoid(f_t)
+            g_t = torch.tanh(g_t)
+            o_t = torch.sigmoid(o_t)
+
+            C_t = f_t * C_prev[layer] + i_t * g_t
+            h_t = o_t * torch.tanh(C_t)
+
+            outputs.append(h_t.unsqueeze(1))
+            h_prev[layer] = h_t
+            C_prev[layer] = C_t
+        layer_outputs.append(torch.cat(outputs, dim=1))
+
+    return layer_outputs[-1], (torch.stack(h_prev, dim=0), torch.stack(C_prev, dim=0))
+
+
+# 使用手动实现的LSTM前向传播
+manual_output, (manual_hidden, manual_cell) = manual_lstm_forward(input_data, lstm)
+
+# 使用PyTorch的LSTM前向传播
+output, (hidden, cell) = lstm(input_data)
+
+# 比较手动实现和PyTorch实现的结果
+output_close = torch.allclose(manual_output, output, atol=1e-4)
+hidden_state_close = torch.allclose(manual_hidden, hidden, atol=1e-4)
+cell_state_close = torch.allclose(manual_cell, cell, atol=1e-4)
+
+print(output_close, hidden_state_close, cell_state_close)
+
+```
+
+### Transformer
+
+```py
+import torch
+import torch.nn as nn
+
+class TransformerModel(nn.Module):
+    def __init__(self, input_dim, hidden_dim, output_dim, n_layers, n_heads, dropout=0.1):
+        super(TransformerModel, self).__init__()
+        # 由于输入已经是特征向量，这里可以使用一个线性层来调整维度，也可以直接省略
+        self.input_fc = nn.Linear(input_dim, hidden_dim)
+        
+        # Transformer需要知道序列的相对或绝对位置，以下是位置编码
+        self.pos_encoder = nn.Embedding(5000, hidden_dim) # 假设最大序列长度为5000
+        
+        encoder_layers = nn.TransformerEncoderLayer(hidden_dim, n_heads, hidden_dim, dropout)
+        self.transformer_encoder = nn.TransformerEncoder(encoder_layers, n_layers)
+        
+        self.output_fc = nn.Linear(hidden_dim, output_dim)
+
+    def forward(self, x):
+        # 调整输入维度
+        x = self.input_fc(x) # [batch_size, seq_len, hidden_dim]
+        
+        # 生成位置信息
+        positions = torch.arange(0, x.size(1)).expand(x.size(0), x.size(1)).to(x.device)
+        x = x + self.pos_encoder(positions)
+        
+        # 转换维度符合Transformer的输入要求: [seq_len, batch_size, hidden_dim]
+        x = x.permute(1, 0, 2)
+        
+        # Transformer编码器处理
+        out = self.transformer_encoder(x)
+        
+        # 取最后一个时间步的输出
+        out = out[-1, :, :]
+        
+        # 输出层
+        out = self.output_fc(out)
+        
+        return out
+
+# 初始化模型参数
+input_dim = 300
+hidden_dim = 64
+output_dim = 2
+n_layers = 2
+n_heads = 8
+dropout = 0.1
+
+model = TransformerModel(input_dim, hidden_dim, output_dim, n_layers, n_heads, dropout)
+
+# 注意：实际使用时，需要根据具体任务调整模型参数，比如输入维度、隐藏层维度等。
+
+```
+
+
+
 如果之前没有安装过`transformers`
 
 ```css
 pip install transformers
 ```
 
+下载`bert`模型
 
+### Bert base model
 
+由于直接调库可能网络连接不上，可以直接去官网下载。
 
+去hugging-face官网下载这五个文件
 
+![image-20240321225621951](./assets/image-20240321225621951.png)
 
+放到`./model/bert-base-chinese`当中。
+
+![image-20240321231053516](./assets/image-20240321231053516.png)
 
 
 
