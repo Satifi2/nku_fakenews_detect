@@ -12,7 +12,7 @@ import matplotlib.pyplot as plt
 jieba.initialize()
 #在这里可以调参
 hidden_dim = 256
-random_seed = 1
+random_seed = 0
 random_state=0
 epochs= 20
 

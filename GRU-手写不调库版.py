@@ -9,37 +9,42 @@ import torch.nn.functional as F
 import torch.nn as nn
 import torch.optim as optim
 import matplotlib.pyplot as plt
-jieba.initialize()
+# 检查CUDA是否可用，然后选择设备
+device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+print(f'Using device: {device}')
 
+jieba.initialize()
+#在这里可以调参
+hidden_dim = 256
 random_seed = 0
+random_state=0
+epochs= 20
+
 np.random.seed(random_seed)
 random.seed(random_seed)
 torch.manual_seed(random_seed)
 
 train_df = pd.read_csv('./Data/train.news.csv')
-validation_df = train_df.sample(n=2000, random_state=0)
+validation_df = train_df.sample(n=2000, random_state=random_state)
 train_df = train_df.drop(validation_df.index)
 
 def load_embeddings(path, dimension=300):
     word_vecs = {}
     with open(path, 'r', encoding='UTF-8') as f:
-        n, _ = map(int, f.readline().strip().split())
         for line in f:
             parts = line.strip().split()
             word = ' '.join(parts[:-dimension])  # 假设最后dimension个元素是向量，其余的是词
             vec = list(map(float, parts[-dimension:]))  # 只取最后dimension个元素作为向量
             word_vecs[word] = vec
     return word_vecs
-word_vecs = load_embeddings('Data/sgns.sogounews.bigram-char')
+word_vecs = load_embeddings('Data/usefulWordVec.txt')
 
-useful_word_vecs={}#记录有用的词向量的字典
 def text_to_matrix(text, word_vecs, max_words):
     words = jieba.lcut(text)
     matrix = np.zeros((max_words, len(next(iter(word_vecs.values())))))
     for i, word in enumerate(words[:max_words]):
         if word in word_vecs:
             matrix[i] = word_vecs[word]
-            useful_word_vecs[word]=word_vecs[word]
     return matrix
 
 max_words = max(train_df['Title'].apply(lambda x: len(jieba.lcut(x))).max(),
@@ -61,64 +66,55 @@ validation_dataset = TensorDataset(X_validation, y_validation)
 train_loader = DataLoader(dataset=train_dataset, batch_size=64, shuffle=True)
 validation_loader = DataLoader(dataset=validation_dataset, batch_size=64, shuffle=False)
 
-class TransformerModel(nn.Module):
-    def __init__(self, input_dim, hidden_dim, output_dim, n_layers, n_heads, dropout=0.1):
-        super(TransformerModel, self).__init__()
-        # 由于输入已经是特征向量，这里可以使用一个线性层来调整维度，也可以直接省略
-        self.input_fc = nn.Linear(input_dim, hidden_dim)
+def manual_gru_forward(X, gru):
+    batch_size, seq_len, _ = X.shape
+    hidden_size = gru.hidden_size
+    num_layers = gru.num_layers
 
-        # Transformer需要知道序列的相对或绝对位置，以下是位置编码
-        self.pos_encoder = nn.Embedding(5000, hidden_dim)  # 假设最大序列长度为5000
+    # 初始化隐藏状态
+    h_prev = [torch.zeros(batch_size, hidden_size, device=device) for _ in range(num_layers)]
 
-        encoder_layers = nn.TransformerEncoderLayer(hidden_dim, n_heads, hidden_dim, dropout)
-        self.transformer_encoder = nn.TransformerEncoder(encoder_layers, n_layers)
+    # 存储每一层的最终输出
+    layer_outputs = []
 
-        self.output_fc = nn.Linear(hidden_dim, output_dim)
+    # 对于每一层
+    for layer in range(num_layers):
+        layer_input = X if layer == 0 else layer_outputs[-1]
+        W_ir, W_iz, W_in = getattr(gru, f'weight_ih_l{layer}').chunk(3, 0)
+        W_hr, W_hz, W_hn = getattr(gru, f'weight_hh_l{layer}').chunk(3, 0)
+        b_ir, b_iz, b_in = getattr(gru, f'bias_ih_l{layer}').chunk(3)
+        b_hr, b_hz, b_hn = getattr(gru, f'bias_hh_l{layer}').chunk(3)
+
+        outputs = []
+        for t in range(seq_len):
+            x_t = layer_input[:, t, :]
+            r_t = torch.sigmoid(x_t @ W_ir.T + b_ir + h_prev[layer] @ W_hr.T + b_hr)
+            z_t = torch.sigmoid(x_t @ W_iz.T + b_iz + h_prev[layer] @ W_hz.T + b_hz)
+            n_t = torch.tanh(x_t @ W_in.T + b_in + r_t * (h_prev[layer] @ W_hn.T + b_hn))
+            h_t = (1 - z_t) * n_t + z_t * h_prev[layer]
+
+            outputs.append(h_t.unsqueeze(1))
+            h_prev[layer] = h_t
+        layer_outputs.append(torch.cat(outputs, dim=1))
+
+    return layer_outputs[-1], torch.stack(h_prev, dim=0)
+
+#手写线性层
+def manual_linear_forward(X, linear):
+    return X @ linear.weight.T + linear.bias
+
+class GRUModel(nn.Module):
+    def __init__(self, input_dim, hidden_dim, output_dim, n_layers):
+        super(GRUModel, self).__init__()
+        self.gru = nn.GRU(input_dim, hidden_dim, n_layers, batch_first=True)
+        self.fc = nn.Linear(hidden_dim, output_dim)
 
     def forward(self, x):
-        # 调整输入维度
-        x = self.input_fc(x)  # [batch_size, seq_len, hidden_dim]
-        print("x.size()",x.size())#x.size() torch.Size([64, 40, 64])
-        # 生成位置信息
-        positions = torch.arange(0, x.size(1)).expand(x.size(0), x.size(1)).to(x.device)
-        print(positions.size())#torch.Size([64, 40])
-        x = x + self.pos_encoder(positions)
-        print("x+pos_encoder",x.size())#x+pos_encoder torch.Size([64, 40, 64])
-        # 转换维度符合Transformer的输入要求: [seq_len, batch_size, hidden_dim]
-        x = x.permute(1, 0, 2)
-        print("x.permute",x.size())#x.permute torch.Size([40, 64, 64])
-
-        # Transformer编码器处理
-        out = self.transformer_encoder(x)
-
-        print("out.size()",out.size())#out.size() torch.Size([40, 64, 64])
-
-        # 取最后一个时间步的输出
-        out = out[-1, :, :]
-
-        print("out[-1:,:,:].size()",out.size())#out[-1:,:,:].size() torch.Size([64, 64])
-
-        # 输出层
-        out = self.output_fc(out)
-
-        print("output_fc(out).size()",out.size())#output_fc(out).size() torch.Size([64, 2])
-
+        out, hidden = manual_gru_forward(x,self.gru)
+        out = manual_linear_forward(out[:, -1, :],self.fc)
         return out
 
-
-# 初始化模型参数
-input_dim = 300
-hidden_dim = 64
-output_dim = 2
-n_layers = 2
-n_heads = 8
-dropout = 0.1
-
-model = TransformerModel(input_dim, hidden_dim, output_dim, n_layers, n_heads, dropout)
-
-# 检查CUDA是否可用，然后选择设备
-device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-print(f'Using device: {device}')
+model = GRUModel(input_dim=300, hidden_dim=hidden_dim, output_dim=2, n_layers=2)
 
 # 将模型转移到选定的设备
 model.to(device)
@@ -132,7 +128,7 @@ def to_device(data, device):
 criterion = nn.CrossEntropyLoss()
 optimizer = optim.Adam(model.parameters())
 
-for epoch in range(20):
+for epoch in range(epochs):
     for texts, labels in train_loader:
         texts, labels = to_device(texts, device), to_device(labels, device)# 训练循环中，确保数据和模型都在同一个设备
         optimizer.zero_grad()
@@ -157,7 +153,6 @@ def evaluate_model(data_loader, model):
             probs = F.softmax(outputs, dim=1)
             probabilities.extend(probs[:, 1].cpu().numpy())
             y_true.extend(labels.cpu().numpy())
-    # print(probabilities[:20],"\n", y_true[:20],"\n", y_pred[:20],"\n",y_validation[:20])
 
     precision_0 = precision_score(y_true, y_pred, pos_label=0)
     recall_0 = recall_score(y_true, y_pred, pos_label=0)
@@ -210,8 +205,3 @@ test_loader = DataLoader(dataset=test_dataset, batch_size=64, shuffle=False)
 print("Evaluation on Test Set:")
 evaluate_model(test_loader, model)
 
-# 遍历字典并写入文件
-with open('./Data/usefulWordVec.txt', 'w', encoding='utf-8') as f:
-    for word, vec in useful_word_vecs.items():
-        line = f"{word} {' '.join(map(str, vec))}\n"
-        f.write(line)
