@@ -61,6 +61,64 @@ validation_dataset = TensorDataset(X_validation, y_validation)
 train_loader = DataLoader(dataset=train_dataset, batch_size=64, shuffle=True)
 validation_loader = DataLoader(dataset=validation_dataset, batch_size=64, shuffle=False)
 
+def manual_multihead_attention(x, multihead_attn):
+    d_model = multihead_attn.embed_dim
+    num_heads = multihead_attn.num_heads
+
+    # 计算每个头处理的维度大小
+    head_dim = d_model // num_heads
+
+    # 从multihead_attn提取权重
+    Wq = multihead_attn.in_proj_weight[:d_model, :]
+    Wk = multihead_attn.in_proj_weight[d_model:2*d_model, :]
+    Wv = multihead_attn.in_proj_weight[2*d_model:, :]
+    Wo = multihead_attn.out_proj.weight
+
+    batch_size, seq_len, _ = x.shape
+
+    # 分割输入到不同的头，并计算Q, K, V
+    Q = x.matmul(Wq.T).reshape(batch_size, seq_len, num_heads, head_dim).transpose(1, 2)#为什么num_heads要能整除d_model，只有这样才能reshape
+    K = x.matmul(Wk.T).reshape(batch_size, seq_len, num_heads, head_dim).transpose(1, 2)
+    V = x.matmul(Wv.T).reshape(batch_size, seq_len, num_heads, head_dim).transpose(1, 2)
+
+    # 计算注意力分数
+    scores = Q.matmul(K.transpose(-2, -1)) / torch.sqrt(torch.tensor(head_dim, dtype=torch.float))
+    attn = F.softmax(scores, dim=-1)
+
+    # 应用注意力权重到V
+    context = attn.matmul(V).transpose(1, 2).reshape(batch_size, seq_len, d_model)
+
+    # 线性投影
+    output = context.matmul(Wo.T)
+
+    return output
+
+class SimpleTransformerEncoderLayer(nn.Module):
+    def __init__(self, d_model, n_heads, dim_feedforward, dropout=0.0):
+        super(SimpleTransformerEncoderLayer, self).__init__()
+        self.self_attn = nn.MultiheadAttention(embed_dim=d_model, num_heads=n_heads, dropout=dropout)
+        self.linear1 = nn.Linear(d_model, dim_feedforward)
+        self.dropout = nn.Dropout(dropout)
+        self.linear2 = nn.Linear(dim_feedforward, d_model)
+
+        self.norm1 = nn.LayerNorm(d_model)
+        self.norm2 = nn.LayerNorm(d_model)
+        self.dropout1 = nn.Dropout(dropout)
+        self.dropout2 = nn.Dropout(dropout)
+
+        self.activation = F.relu
+
+    def forward(self, src):
+        src2 = manual_multihead_attention(src, self.self_attn)
+        src = src + self.dropout1(src2)
+        src = self.norm1(src)
+        # print("shape of src", src.shape)
+
+        src2 = self.linear2(self.dropout(self.activation(self.linear1(src))))
+        src = src + self.dropout2(src2)
+        src = self.norm2(src)
+        return src.transpose(0, 1)
+
 class TransformerModel(nn.Module):
     def __init__(self, input_dim, hidden_dim, output_dim, n_layers, n_heads, dropout=0.1):
         super(TransformerModel, self).__init__()
@@ -71,38 +129,38 @@ class TransformerModel(nn.Module):
         self.pos_encoder = nn.Embedding(5000, hidden_dim)  # 假设最大序列长度为5000
 
         encoder_layers = nn.TransformerEncoderLayer(hidden_dim, n_heads, hidden_dim, dropout)
-        self.transformer_encoder = nn.TransformerEncoder(encoder_layers, n_layers)
-
+        # self.transformer_encoder = nn.TransformerEncoder(encoder_layers, n_layers)
+        # 自己实现的transformer encode
+        self.transformer_encoder = SimpleTransformerEncoderLayer(d_model=hidden_dim, n_heads=n_heads, dim_feedforward=hidden_dim, dropout=dropout)
         self.output_fc = nn.Linear(hidden_dim, output_dim)
 
     def forward(self, x):
-        print("x.shape",x.shape)#torch.Size([64, 40, 300]
+        # print("x.shape",x.shape)#torch.Size([64, 40, 300]
         # 调整输入维度
         x = self.input_fc(x)  # [batch_size, seq_len, hidden_dim]
-        print("x.size()",x.size())#x.size() torch.Size([64, 40, 64])
+        # print("x.size()",x.size())#x.size() torch.Size([64, 40, 64])
         # 生成位置信息
         positions = torch.arange(0, x.size(1)).expand(x.size(0), x.size(1)).to(x.device)
-        print(positions.size())#torch.Size([64, 40])
+        # print(positions.size())#torch.Size([64, 40])
         x = x + self.pos_encoder(positions)
-        print("x+pos_encoder",x.size())#x+pos_encoder torch.Size([64, 40, 64])
-        # 转换维度符合Transformer的输入要求: [seq_len, batch_size, hidden_dim]
-        x = x.permute(1, 0, 2)
-        print("x.permute",x.size())#x.permute torch.Size([40, 64, 64])
+        # print("x+pos_encoder",x.size())#x+pos_encoder torch.Size([64, 40, 64])
+
+        # print("x.permute",x.size())#x.permute torch.Size([40, 64, 64])
 
         # Transformer编码器处理
         out = self.transformer_encoder(x)
 
-        print("out.size()",out.size())#out.size() torch.Size([40, 64, 64])
+        # print("out.size()",out.size())#out.size() torch.Size([40, 64, 64])
 
         # 取最后一个时间步的输出
         out = out[-1, :, :]
 
-        print("out[-1:,:,:].size()",out.size())#out[-1:,:,:].size() torch.Size([64, 64])
+        # print("out[-1:,:,:].size()",out.size())#out[-1:,:,:].size() torch.Size([64, 64])
 
         # 输出层
         out = self.output_fc(out)
 
-        print("output_fc(out).size()",out.size())#output_fc(out).size() torch.Size([64, 2])
+        # print("output_fc(out).size()",out.size())#output_fc(out).size() torch.Size([64, 2])
 
         return out
 
@@ -113,7 +171,7 @@ hidden_dim = 64
 output_dim = 2
 n_layers = 2
 n_heads = 8
-dropout = 0.1
+dropout = 0
 
 model = TransformerModel(input_dim, hidden_dim, output_dim, n_layers, n_heads, dropout)
 
