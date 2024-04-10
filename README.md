@@ -879,6 +879,14 @@ print(output_close, hidden_state_close, cell_state_close)
 
 ### Transformer
 
+![image-20240410175652957](./assets/image-20240410175652957.png)
+
+
+
+![image-20240410175725177](./assets/image-20240410175725177.png)
+
+![image-20240410175740496](./assets/image-20240410175740496.png)
+
 ```py
 import torch
 import torch.nn as nn
@@ -942,6 +950,10 @@ pip install transformers
 ```
 
 下载`bert`模型
+
+
+
+
 
 ### Bert base model
 

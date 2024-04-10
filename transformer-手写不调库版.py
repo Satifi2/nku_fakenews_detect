@@ -119,6 +119,9 @@ class SimpleTransformerEncoderLayer(nn.Module):
         src = self.norm2(src)
         return src.transpose(0, 1)
 
+def manual_embedding_lookup(indices,embedding_matrix):
+    return embedding_matrix[indices]
+
 class TransformerModel(nn.Module):
     def __init__(self, input_dim, hidden_dim, output_dim, n_layers, n_heads, dropout=0.1):
         super(TransformerModel, self).__init__()
@@ -142,7 +145,7 @@ class TransformerModel(nn.Module):
         # 生成位置信息
         positions = torch.arange(0, x.size(1)).expand(x.size(0), x.size(1)).to(x.device)
         # print(positions.size())#torch.Size([64, 40])
-        x = x + self.pos_encoder(positions)
+        x = x + manual_embedding_lookup(positions,self.pos_encoder.weight)
         # print("x+pos_encoder",x.size())#x+pos_encoder torch.Size([64, 40, 64])
 
         # print("x.permute",x.size())#x.permute torch.Size([40, 64, 64])
