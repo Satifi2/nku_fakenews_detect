@@ -179,7 +179,7 @@ hidden_dim = 64
 output_dim = 2
 n_layers = 2
 n_heads = 8
-dropout = 0
+dropout = 0.1
 
 model = TransformerModel(input_dim, hidden_dim, output_dim, n_layers, n_heads, dropout)
 
